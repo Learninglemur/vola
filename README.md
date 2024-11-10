@@ -12,7 +12,6 @@ A web application for uploading and processing trading data.
 Frontend:
 - React
 - Vite
-- [Other frontend libraries you're using]
 
 Backend:
 - Python
