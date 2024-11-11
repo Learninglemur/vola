@@ -16,7 +16,11 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Frontend URL
+    allow_origins=[
+        "http://localhost:5173",  # Local development
+        "https://vola-629904468774.us-central1.run.app",  # Cloud Run URL
+        "*"  # Or this to allow all origins
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
