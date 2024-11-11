@@ -1,0 +1,25 @@
+steps:
+# Build the container image
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-t', 'gcr.io/durable-sound-440422-u5/vola-backend', './backend']
+  dir: '.'
+
+# Push the container image to Container Registry
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', 'gcr.io/durable-sound-440422-u5/vola-backend']
+
+# Deploy container image to Cloud Run
+- name: 'gcr.io/cloud-builders/gcloud'
+  args:
+  - 'run'
+  - 'deploy'
+  - 'vola-backend'
+  - '--image'
+  - 'gcr.io/durable-sound-440422-u5/vola-backend'
+  - '--region'
+  - 'us-central1'
+  - '--platform'
+  - 'managed'
+  - '--allow-unauthenticated'
+images:
+- 'gcr.io/durable-sound-440422-u5/vola-backend'
