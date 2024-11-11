@@ -5,7 +5,7 @@ fastapi==0.92.0  # Known stable version for compatibility
 gunicorn==21.2.0
 h11==0.14.0
 idna==3.10
-numpy==2.1.3
+numpy==2.0.2
 openpyxl
 pandas
 pydantic==1.10.7  # Compatible with FastAPI 0.92.0
