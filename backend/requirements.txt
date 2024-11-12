@@ -1,14 +1,14 @@
 annotated-types==0.7.0
 click==8.1.7
 et_xmlfile==2.0.0
-fastapi==0.92.0  # Known stable version for compatibility
+fastapi==0.115.5  # Known stable version for compatibility
 gunicorn==21.2.0
 h11==0.14.0
 idna==3.10
 numpy==2.0.2
 openpyxl
 pandas
-pydantic==1.10.7  # Compatible with FastAPI 0.92.0
+pydantic==2.9.2  # Compatible with FastAPI 0.92.0
 python-dateutil==2.9.0.post0
 python-multipart
 pytz==2024.2
