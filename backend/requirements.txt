@@ -1,7 +1,7 @@
 annotated-types==0.7.0
 click==8.1.7
 et_xmlfile==2.0.0
-fastapi==0.115.5
+fastapi==0.103.0
 gunicorn==21.2.0
 h11==0.14.0
 idna==3.10
