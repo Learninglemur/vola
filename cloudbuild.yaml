@@ -1,14 +1,12 @@
 steps:
-# Build the container image
+# Build and deploy backend
 - name: 'gcr.io/cloud-builders/docker'
   args: ['build', '-t', 'gcr.io/durable-sound-440422-u5/vola-backend', './backend']
   dir: '.'
 
-# Push the container image to Container Registry
 - name: 'gcr.io/cloud-builders/docker'
   args: ['push', 'gcr.io/durable-sound-440422-u5/vola-backend']
 
-# Deploy container image to Cloud Run
 - name: 'gcr.io/cloud-builders/gcloud'
   args:
   - 'run'
@@ -21,5 +19,40 @@ steps:
   - '--platform'
   - 'managed'
   - '--allow-unauthenticated'
+
+# Get the URL of the deployed backend service
+- name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: 'bash'
+  args:
+  - '-c'
+  - |
+    echo "$(gcloud run services describe vola-backend --region=us-central1 --format='value(status.url)')" > _backend_url
+
+# Build and deploy frontend with backend URL
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-t', 'gcr.io/durable-sound-440422-u5/vola-frontend', './frontend']
+  dir: '.'
+  env:
+    - 'VITE_API_URL=$(cat _backend_url)'
+
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', 'gcr.io/durable-sound-440422-u5/vola-frontend']
+
+- name: 'gcr.io/cloud-builders/gcloud'
+  args:
+  - 'run'
+  - 'deploy'
+  - 'vola-frontend'
+  - '--image'
+  - 'gcr.io/durable-sound-440422-u5/vola-frontend'
+  - '--region'
+  - 'us-central1'
+  - '--platform'
+  - 'managed'
+  - '--allow-unauthenticated'
+  - '--set-env-vars'
+  - 'VITE_API_URL=$(cat _backend_url)'
+
 images:
 - 'gcr.io/durable-sound-440422-u5/vola-backend'
+- 'gcr.io/durable-sound-440422-u5/vola-frontend'
