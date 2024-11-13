@@ -20,7 +20,7 @@ steps:
   - 'managed'
   - '--allow-unauthenticated'
   - '--set-env-vars'
-  - 'VITE_API_URL=https://your-existing-backend-url.run.app'  # Replace with your actual backend URL
+  - 'VITE_API_URL=https://vola-629904468774.us-central1.run.app'
 
 images:
 - 'gcr.io/durable-sound-440422-u5/vola-frontend'
