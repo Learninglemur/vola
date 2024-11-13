@@ -1,14 +1,24 @@
+const apiUrl = import.meta.env.VITE_API_URL;
+
 export const api = {
-  uploadFile: async (formData: FormData) => {
+  parseTrades: async (file: File) => {
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/upload`, {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch(`${apiUrl}/parse-trades/`, {
         method: 'POST',
         body: formData,
       });
-      const data = await response.json();
-      return data;
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to parse trades');
+      }
+
+      return await response.json();
     } catch (error) {
-      console.error('Error uploading file:', error);
+      console.error('Error parsing trades:', error);
       throw error;
     }
   },
