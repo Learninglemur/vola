@@ -35,7 +35,7 @@ const FileUploadComponent = () => {
     }
   };
 
-  const handleUpload = async (selectedFile: File) => {
+ const handleUpload = async (selectedFile: File) => {
     const formData = new FormData();
     formData.append('file', selectedFile);
     
@@ -43,7 +43,7 @@ const FileUploadComponent = () => {
     setSuccess(null);
 
     try {
-      const response = await fetch('http://localhost:8000/parse-trades/', {
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/parse-trades/`, {
         method: 'POST',
         body: formData,
       });
