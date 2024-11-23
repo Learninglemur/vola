@@ -17,27 +17,30 @@ interface TradeData {
 }
 
 const FileUploadComponent = () => {
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [tradeData, setTradeData] = useState<TradeData[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = event.target.files?.[0];
-    if (selectedFile) {
-      if (selectedFile.size > 3 * 1024 * 1024) { // 3MB limit
-        setError('File size exceeds 3MB limit');
-        setSuccess(null);
-        return;
-      }
-      setFile(selectedFile);
-      handleUpload(selectedFile);
+    const selectedFiles = Array.from(event.target.files || []);
+    const totalSize = selectedFiles.reduce((acc, file) => acc + file.size, 0);
+    
+    if (totalSize > 10 * 1024 * 1024) { // 10MB total limit
+      setError('Total file size exceeds 10MB limit');
+      setSuccess(null);
+      return;
     }
+
+    setFiles(selectedFiles);
+    handleUpload(selectedFiles);
   };
 
- const handleUpload = async (selectedFile: File) => {
+  const handleUpload = async (selectedFiles: File[]) => {
     const formData = new FormData();
-    formData.append('file', selectedFile);
+    selectedFiles.forEach(file => {
+      formData.append('files', file); // Changed from 'file' to 'files' to match backend
+    });
     
     setError(null);
     setSuccess(null);
@@ -51,7 +54,7 @@ const FileUploadComponent = () => {
       if (response.ok) {
         const data = await response.json();
         setTradeData(data.slice(0, 20));
-        setSuccess('File processed successfully');
+        setSuccess('Files processed successfully');
         console.log('Upload successful:', data);
       } else {
         const errorData = await response.json();
@@ -59,7 +62,7 @@ const FileUploadComponent = () => {
       }
     } catch (error) {
       console.error('Error:', error);
-      setError(error instanceof Error ? error.message : 'Failed to process file');
+      setError(error instanceof Error ? error.message : 'Failed to process files');
       setTradeData([]);
     }
   };
@@ -74,7 +77,7 @@ const FileUploadComponent = () => {
           <div>
             <h2 className="text-2xl text-gray-200 font-light">Upload Trade Data</h2>
             <p className="text-sm text-gray-400 mt-2">
-              Upload your trading data file in CSV or Excel format.
+              Upload one or more trading data files in CSV or Excel format.
             </p>
           </div>
           <button className="text-gray-400 hover:text-gray-300">
@@ -112,6 +115,7 @@ const FileUploadComponent = () => {
               accept=".csv,.xlsx,.xls"
               className="hidden"
               id="file-upload"
+              multiple // Enable multiple file selection
             />
             <label htmlFor="file-upload" className="cursor-pointer">
               <Upload className={`w-10 h-10 mx-auto mb-4 ${
@@ -120,34 +124,41 @@ const FileUploadComponent = () => {
                 'text-gray-400'
               }`} />
               <div className="text-gray-300">
-                Drag & Drop or <span className="text-blue-400">Choose file</span>
+                Drag & Drop or <span className="text-blue-400">Choose files</span>
               </div>
               <p className="text-sm text-gray-500 mt-2">
-                CSV or Excel files up to 3MB
+                CSV or Excel files up to 10MB total
               </p>
             </label>
           </div>
 
-          {/* File Preview */}
-          {file && (
-            <div className="mt-4 p-3 bg-black/40 rounded-lg flex justify-between items-center backdrop-blur-sm">
-              <div className="flex items-center">
-                <div className="text-gray-300">{file.name}</div>
-                <div className="text-gray-500 text-sm ml-2">
-                  ({(file.size / 1024 / 1024).toFixed(2)}MB)
+          {/* Files Preview */}
+          {files.length > 0 && (
+            <div className="mt-4 space-y-2">
+              {files.map((file, index) => (
+                <div key={index} className="p-3 bg-black/40 rounded-lg flex justify-between items-center backdrop-blur-sm">
+                  <div className="flex items-center">
+                    <div className="text-gray-300">{file.name}</div>
+                    <div className="text-gray-500 text-sm ml-2">
+                      ({(file.size / 1024 / 1024).toFixed(2)}MB)
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      const newFiles = files.filter((_, i) => i !== index);
+                      setFiles(newFiles);
+                      if (newFiles.length === 0) {
+                        setError(null);
+                        setSuccess(null);
+                        setTradeData([]);
+                      }
+                    }} 
+                    className="text-gray-400 hover:text-gray-300"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
-              </div>
-              <button 
-                onClick={() => {
-                  setFile(null);
-                  setError(null);
-                  setSuccess(null);
-                  setTradeData([]);
-                }} 
-                className="text-gray-400 hover:text-gray-300"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              ))}
             </div>
           )}
 
