@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel  # Add this import
 from typing import List, Dict, Optional
 import pandas as pd
 import io
@@ -9,7 +9,7 @@ import re
 
 app = FastAPI(
     title="Trade Parser API",
-    description="API for parsing trading data from multiple file formats",
+    description="API for parsing trading data from different file formats",
     version="1.0.0"
 )
 
@@ -17,9 +17,9 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",
-        "https://vola-629904468774.us-central1.run.app",
-        "*"
+        "http://localhost:5173",  # Local development
+        "https://vola-629904468774.us-central1.run.app",  # Cloud Run URL
+        "*"  # Or this to allow all origins
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -104,7 +104,7 @@ def detect_columns_in_row(row):
     Detect if a row matches the required columns for either format.
     """
     cleaned_row = [re.sub(r'[^a-zA-Z]', '', str(cell)).strip().lower() for cell in row]
-    print(f"Checking row: {cleaned_row}")
+    print(f"Checking row: {cleaned_row}")  # Keeping debug output
 
     if all(re.sub(r'[^a-zA-Z]', '', col).lower() in cleaned_row for col in REQUIRED_COLUMNS_FORMAT_1):
         return "Format 1"
@@ -174,7 +174,7 @@ def extract_data(df, header_row, format_type):
             if matched_col:
                 matched_columns[standard_col] = matched_col
 
-    print(f"Matched columns: {matched_columns}")
+    print(f"Matched columns: {matched_columns}")  # Keeping debug output
 
     if len(matched_columns) < len(columns_map):
         print("Error: Could not find all required columns in the header row.")
@@ -209,81 +209,56 @@ def extract_data(df, header_row, format_type):
     extracted_data = extracted_data.sort_values(['Date', 'Time'])
     extracted_data = extracted_data[final_columns]
     
-    return extracted_data
+    return extracted_data.head(10)
 
-async def process_single_file(file: UploadFile) -> pd.DataFrame:
+@app.post("/parse-trades/", response_model=List[TradeData])
+async def parse_trades(file: UploadFile = File(...)):
     """
-    Process a single file and return extracted data as DataFrame
+    Parse trading data from uploaded file
     """
     if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type for {file.filename}. Please upload .xlsx, .xls, or .csv files"
+            detail="Unsupported file type. Please upload .xlsx, .xls, or .csv file"
         )
     
-    content = await file.read()
-    if file.filename.endswith(('.xlsx', '.xls')):
-        df = pd.read_excel(io.BytesIO(content))
-    else:
-        df = pd.read_csv(io.BytesIO(content))
-    
-    print(f"Processing file: {file.filename}")
-    print("Initial columns in DataFrame:", df.columns.tolist())
-    
-    header_row, format_type = find_header_row_and_format(df)
-    if format_type is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File format not recognized for {file.filename}"
-        )
-    
-    print(f"Detected format: {format_type} for file: {file.filename}")
-    
-    extracted_data = extract_data(df, header_row, format_type)
-    if extracted_data.empty:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No valid data could be extracted from {file.filename}"
-        )
-    
-    return extracted_data
-
-@app.post("/parse-trades/", response_model=List[TradeData])
-async def parse_trades(files: List[UploadFile] = File(...)):
-    """
-    Parse trading data from multiple uploaded files
-    """
     try:
-        # Process all files and collect their DataFrames
-        all_data = []
-        for file in files:
-            extracted_df = await process_single_file(file)
-            all_data.append(extracted_df)
+        content = await file.read()
+        if file.filename.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(io.BytesIO(content))
+        else:
+            df = pd.read_csv(io.BytesIO(content))
         
-        # Combine all DataFrames
-        if not all_data:
+        print("Initial columns in DataFrame:", df.columns.tolist())
+
+        header_row, format_type = find_header_row_and_format(df)
+        if format_type is None:
             raise HTTPException(
                 status_code=400,
-                detail="No valid data found in any of the uploaded files"
+                detail="File format not recognized"
             )
         
-        combined_df = pd.concat(all_data, ignore_index=True)
+        extracted_data = extract_data(df, header_row, format_type)
+        if extracted_data.empty:
+            raise HTTPException(
+                status_code=400,
+                detail="No valid data could be extracted from the file"
+            )
         
-        # Sort the combined data by Date and Time
-        combined_df = combined_df.sort_values(['Date', 'Time'])
+        print(f"Detected format: {format_type}")
         
         # Replace NaN values with None for string columns and 0 for numeric columns
-        for col in combined_df.select_dtypes(include=['object']).columns:
-            combined_df[col] = combined_df[col].where(pd.notna(combined_df[col]), None)
+        for col in extracted_data.select_dtypes(include=['object']).columns:
+            extracted_data[col] = extracted_data[col].where(pd.notna(extracted_data[col]), None)
         
         # Convert to records and create Pydantic models
-        trades_data = combined_df.to_dict('records')
+        trades_data = extracted_data.to_dict('records')
         return [TradeData(**trade) for trade in trades_data]
         
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error processing files: {str(e)}"
+            detail=f"Error processing file: {str(e)}"
         )
 
 @app.get("/")
@@ -293,11 +268,7 @@ async def root():
         "message": "Trade Parser API",
         "version": "1.0.0",
         "endpoints": {
-            "/parse-trades/": "POST - Upload and parse multiple trading data files",
+            "/parse-trades/": "POST - Upload and parse trading data file",
             "/": "GET - This information"
         }
     }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
