@@ -1,34 +1,32 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from google.cloud import storage
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import pandas as pd
 import io
 import re
 
-# Initialize FastAPI app
 app = FastAPI(
     title="Trade Parser API",
-    description="API for parsing trading data from different file formats and storing files in Google Cloud Storage",
-    version="1.2.0"
+    description="API for parsing trading data from multiple file formats",
+    version="1.0.0"
 )
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",  # Local development
-        "https://vola-629904468774.us-central1.run.app",  # Cloud Run URL
-        "*"  # Or this to allow all origins
+        "http://localhost:5173",
+        "https://vola-629904468774.us-central1.run.app",
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Define the required columns for each format
+# [Previous code for constants and TradeData model remains the same]
 REQUIRED_COLUMNS_FORMAT_1 = ["Symbol", "Date/Time", "Quantity", "Proceeds", "Comm/Fee"]
 REQUIRED_COLUMNS_FORMAT_2 = ["Description", "DateTime", "Quantity", "Proceeds", "IBCommission"]
 
@@ -46,120 +44,92 @@ class TradeData(BaseModel):
     Proceeds: float
     Comm_fee: float
 
-# Google Cloud Storage client
-storage_client = storage.Client()
-
-# Replace with your bucket name
-BUCKET_NAME = "vola_bucket"
-
-def upload_to_gcs(file_content, bucket_name: str, destination_blob_name: str) -> str:
-    """
-    Uploads a file to Google Cloud Storage and returns the file's public URL.
-    """
-    bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(destination_blob_name)
-    blob.upload_from_string(file_content)
-    blob.make_public()
-    return blob.public_url
-
-def save_dataframe_to_csv_and_upload(df: pd.DataFrame, bucket_name: str, filename: str) -> str:
-    """
-    Saves a DataFrame to a CSV file and uploads it to Google Cloud Storage.
+# [Previous helper functions remain the same]
+def parse_symbol(symbol):
+    """Parse symbol string into components: Ticker, Expiry, Strike, Instrument"""
+    parts = str(symbol).split()
+    ticker = parts[0] if len(parts) > 0 else None
+    expiry = parts[1] if len(parts) > 1 else None
+    strike = parts[2] if len(parts) > 2 else None
+    instrument = parts[3] if len(parts) > 3 else None
     
-    Args:
-        df (pd.DataFrame): The DataFrame to save.
-        bucket_name (str): The GCS bucket name.
-        filename (str): The name of the file in GCS.
+    return pd.Series({
+        'Ticker': ticker,
+        'Expiry': expiry,
+        'Strike': strike,
+        'Instrument': instrument
+    })
 
-    Returns:
-        str: The public URL of the uploaded CSV file.
-    """
-    csv_buffer = io.StringIO()
-    df.to_csv(csv_buffer, index=False)
-    csv_content = csv_buffer.getvalue()
-    return upload_to_gcs(csv_content, bucket_name, filename)
+# [Other helper functions remain the same - parse_datetime, convert_to_numeric, detect_columns_in_row, find_header_row_and_format, extract_data]
 
-@app.post("/upload/")
-async def upload_file_to_gcs(file: UploadFile = File(...)):
+async def process_single_file(file: UploadFile) -> pd.DataFrame:
     """
-    Upload a file to Google Cloud Storage.
+    Process a single file and return extracted data as DataFrame
     """
     if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
         raise HTTPException(
             status_code=400,
-            detail="Unsupported file type. Please upload .xlsx, .xls, or .csv file"
+            detail=f"Unsupported file type for {file.filename}. Please upload .xlsx, .xls, or .csv files"
         )
     
-    try:
-        content = await file.read()
-        public_url = upload_to_gcs(content, BUCKET_NAME, f"uploads/{file.filename}")
-        return {"message": "File uploaded successfully", "url": public_url}
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error uploading file: {str(e)}"
-        )
-
-@app.post("/parse-trades/", response_model=Dict[str, Optional[str]])
-async def parse_trades(file: UploadFile = File(...)):
-    """
-    Parse trading data from uploaded file, upload the original and parsed files to Google Cloud Storage.
-    """
-    if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
+    content = await file.read()
+    if file.filename.endswith(('.xlsx', '.xls')):
+        df = pd.read_excel(io.BytesIO(content))
+    else:
+        df = pd.read_csv(io.BytesIO(content))
+    
+    header_row, format_type = find_header_row_and_format(df)
+    if format_type is None:
         raise HTTPException(
             status_code=400,
-            detail="Unsupported file type. Please upload .xlsx, .xls, or .csv file"
+            detail=f"File format not recognized for {file.filename}"
         )
     
+    extracted_data = extract_data(df, header_row, format_type)
+    if extracted_data.empty:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No valid data could be extracted from {file.filename}"
+        )
+    
+    return extracted_data
+
+@app.post("/parse-trades/", response_model=List[TradeData])
+async def parse_trades(files: List[UploadFile] = File(...)):
+    """
+    Parse trading data from multiple uploaded files
+    """
     try:
-        # Read file content
-        content = await file.read()
-        if file.filename.endswith(('.xlsx', '.xls')):
-            df = pd.read_excel(io.BytesIO(content))
-        else:
-            df = pd.read_csv(io.BytesIO(content))
+        # Process all files and collect their DataFrames
+        all_data = []
+        for file in files:
+            extracted_df = await process_single_file(file)
+            all_data.append(extracted_df)
         
-        print("Initial columns in DataFrame:", df.columns.tolist())
-
-        # Save the original file to Google Cloud Storage
-        original_file_url = upload_to_gcs(content, BUCKET_NAME, f"uploads/{file.filename}")
-
-        # Process and parse the file
-        header_row, format_type = find_header_row_and_format(df)
-        if format_type is None:
+        # Combine all DataFrames
+        if not all_data:
             raise HTTPException(
                 status_code=400,
-                detail="File format not recognized"
+                detail="No valid data found in any of the uploaded files"
             )
         
-        extracted_data = extract_data(df, header_row, format_type)
-        if extracted_data.empty:
-            raise HTTPException(
-                status_code=400,
-                detail="No valid data could be extracted from the file"
-            )
+        combined_df = pd.concat(all_data, ignore_index=True)
         
-        print(f"Detected format: {format_type}")
+        # Sort the combined data by Date and Time
+        combined_df = combined_df.sort_values(['Date', 'Time'])
         
         # Replace NaN values with None for string columns and 0 for numeric columns
-        for col in extracted_data.select_dtypes(include=['object']).columns:
-            extracted_data[col] = extracted_data[col].where(pd.notna(extracted_data[col]), None)
+        for col in combined_df.select_dtypes(include=['object']).columns:
+            combined_df[col] = combined_df[col].where(pd.notna(combined_df[col]), None)
         
-        # Save parsed data as a CSV file and upload to GCS
-        parsed_file_url = save_dataframe_to_csv_and_upload(
-            extracted_data, BUCKET_NAME, f"parsed/parsed_{file.filename}.csv"
-        )
-        
-        return {
-            "message": "File processed successfully",
-            "original_file_url": original_file_url,
-            "parsed_file_url": parsed_file_url
-        }
+        # Convert to records and create Pydantic models
+        trades_data = combined_df.to_dict('records')
+        return [TradeData(**trade) for trade in trades_data]
         
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error processing file: {str(e)}"
+            detail=f"Error processing files: {str(e)}"
         )
 
 @app.get("/")
@@ -167,10 +137,9 @@ async def root():
     """Root endpoint returning API information"""
     return {
         "message": "Trade Parser API",
-        "version": "1.2.0",
+        "version": "1.0.0",
         "endpoints": {
-            "/parse-trades/": "POST - Upload and parse trading data file",
-            "/upload/": "POST - Upload file to Google Cloud Storage",
+            "/parse-trades/": "POST - Upload and parse multiple trading data files",
             "/": "GET - This information"
         }
     }
