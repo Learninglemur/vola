@@ -26,227 +26,51 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",  # Local development
-        "https://vola-629904468774.us-central1.run.app",  # Cloud Run URL
-        "*"  # Or this to allow all origins
+        "http://localhost:5173",
+        "https://vola-629904468774.us-central1.run.app",
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Define the required columns for each format
-REQUIRED_COLUMNS_FORMAT_1 = ["Symbol", "Date/Time", "Quantity", "Proceeds", "Comm/Fee"]
-REQUIRED_COLUMNS_FORMAT_2 = ["Description", "DateTime", "Quantity", "Proceeds", "IBCommission"]
-
-class TradeData(BaseModel):
-    Date: Optional[str]
-    Time: Optional[str]
-    Ticker: Optional[str]
-    Expiry: Optional[str]
-    Strike: Optional[str]
-    Instrument: Optional[str]
-    Quantity: float
-    Net_proceeds: float
-    Symbol: Optional[str]
-    DateTime: Optional[str]
-    Proceeds: float
-    Comm_fee: float
-
-# Google Cloud Storage client
-storage_client = storage.Client()
-BUCKET_NAME = "vola_bucket"
-
-@app.get("/test-gcs/")
-async def test_gcs():
+# Basic test endpoint
+@app.get("/basic-test/")
+async def basic_test():
     """
-    Test GCS connectivity and permissions with detailed error reporting
+    Basic test endpoint to verify API is working
+    """
+    return {"message": "API is working"}
+
+# GCS test endpoint
+@app.get("/gcs-test/")
+async def gcs_test():
+    """
+    Test GCS connectivity
     """
     try:
-        logger.info("[DEBUG] Starting GCS test")
+        # Initialize storage client
+        storage_client = storage.Client()
         
-        # 1. Test if we can get project info
-        try:
-            project = storage_client.project
-            return {"step1": f"Successfully got project: {project}"}
-        except Exception as e:
-            return {"error": f"Failed to get project info: {str(e)}"}
-
-        # If we get here, we'll try bucket operations
-        try:
-            bucket = storage_client.bucket(BUCKET_NAME)
-            return {"step2": f"Successfully got bucket reference: {BUCKET_NAME}"}
-        except Exception as e:
-            return {"error": f"Failed to get bucket: {str(e)}"}
-            
-    except Exception as e:
-        # Return the actual error instead of raising an HTTPException
+        # Get project info
+        project = storage_client.project
+        
+        # Try to list buckets
+        buckets = list(storage_client.list_buckets())
+        bucket_names = [bucket.name for bucket in buckets]
+        
         return {
+            "status": "success",
+            "project": project,
+            "buckets": bucket_names
+        }
+    except Exception as e:
+        return {
+            "status": "error",
             "error": str(e),
-            "error_type": type(e).__name__,
-            "bucket_name": BUCKET_NAME
+            "error_type": str(type(e))
         }
-
-def upload_to_gcs(content: bytes, filename: str, content_type: str) -> str:
-    """
-    Uploads a file to Google Cloud Storage with detailed error logging.
-    """
-    try:
-        logger.info(f"[DEBUG] Starting upload process for file: {filename}")
-        logger.info(f"[DEBUG] Content length: {len(content)} bytes")
-        logger.info(f"[DEBUG] Content type: {content_type}")
-        
-        # Print current credentials
-        credentials = storage_client.credentials
-        logger.info(f"[DEBUG] Using credentials: {credentials.__class__.__name__}")
-        logger.info(f"[DEBUG] Project ID: {storage_client.project}")
-        
-        # Try to list buckets to verify credentials
-        try:
-            buckets = list(storage_client.list_buckets(max_results=1))
-            logger.info(f"[DEBUG] Successfully listed buckets: {[b.name for b in buckets]}")
-        except Exception as e:
-            logger.error(f"[DEBUG] Failed to list buckets: {str(e)}")
-        
-        # Get bucket
-        try:
-            bucket = storage_client.bucket(BUCKET_NAME)
-            logger.info(f"[DEBUG] Got bucket reference: {bucket.name}")
-        except Exception as e:
-            logger.error(f"[DEBUG] Failed to get bucket: {str(e)}")
-            raise
-        
-        # Create blob
-        try:
-            blob = bucket.blob(filename)
-            logger.info(f"[DEBUG] Created blob reference: {blob.name}")
-        except Exception as e:
-            logger.error(f"[DEBUG] Failed to create blob: {str(e)}")
-            raise
-        
-        # Upload content
-        try:
-            blob.upload_from_string(content, content_type=content_type)
-            logger.info("[DEBUG] Successfully uploaded content")
-        except Exception as e:
-            logger.error(f"[DEBUG] Failed to upload content: {str(e)}")
-            raise
-        
-        # Generate signed URL
-        try:
-            signed_url = blob.generate_signed_url(
-                version="v4",
-                expiration=datetime.timedelta(hours=1),
-                method="GET"
-            )
-            logger.info("[DEBUG] Generated signed URL")
-            return signed_url
-        except Exception as e:
-            logger.error(f"[DEBUG] Failed to generate signed URL: {str(e)}")
-            raise
-        
-    except Exception as e:
-        logger.error(f"[DEBUG] Top level error in upload_to_gcs: {str(e)}")
-        logger.exception("[DEBUG] Full traceback:")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to upload to GCS: {str(e)}"
-        )
-
-@app.post("/upload/")
-async def upload_file_to_gcs(file: UploadFile = File(...)):
-    """
-    Upload a file to Google Cloud Storage.
-    """
-    if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
-        raise HTTPException(
-            status_code=400,
-            detail="Unsupported file type. Please upload .xlsx, .xls, or .csv file"
-        )
-    
-    try:
-        content = await file.read()
-        content_type = file.content_type or 'application/octet-stream'
-        logger.info(f"[DEBUG] Attempting to upload: {file.filename}, Content-Type: {content_type}")
-        url = upload_to_gcs(content, file.filename, content_type)
-        return {"message": "File uploaded successfully", "url": url}
-    except Exception as e:
-        logger.error(f"[DEBUG] Upload failed: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error uploading file: {str(e)}"
-        )
-
-@app.post("/parse-trades/")
-async def parse_trades(file: UploadFile = File(...)):
-    """
-    Parse trading data from uploaded file and upload it to Google Cloud Storage.
-    """
-    if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
-        raise HTTPException(
-            status_code=400,
-            detail="Unsupported file type. Please upload .xlsx, .xls, or .csv file"
-        )
-    
-    try:
-        # Read file content
-        content = await file.read()
-        logger.info(f"[DEBUG] File read successfully: {file.filename}")
-        
-        # Try GCS upload first
-        try:
-            content_type = file.content_type or 'application/octet-stream'
-            logger.info(f"[DEBUG] Attempting GCS upload with content-type: {content_type}")
-            url = upload_to_gcs(content, file.filename, content_type)
-            logger.info(f"[DEBUG] GCS upload successful, URL: {url}")
-        except Exception as upload_error:
-            logger.error(f"[DEBUG] GCS upload failed: {str(upload_error)}")
-            url = None
-        
-        # Parse the file
-        file_content = io.BytesIO(content)
-        if file.filename.endswith(('.xlsx', '.xls')):
-            df = pd.read_excel(file_content)
-        else:
-            df = pd.read_csv(file_content)
-        
-        logger.info(f"[DEBUG] Initial columns in DataFrame: {df.columns.tolist()}")
-
-        header_row, format_type = find_header_row_and_format(df)
-        if format_type is None:
-            raise HTTPException(
-                status_code=400,
-                detail="File format not recognized"
-            )
-        
-        extracted_data = extract_data(df, header_row, format_type)
-        if extracted_data.empty:
-            raise HTTPException(
-                status_code=400,
-                detail="No valid data could be extracted from the file"
-            )
-        
-        logger.info(f"[DEBUG] Detected format: {format_type}")
-        
-        # Replace NaN values with None for string columns
-        for col in extracted_data.select_dtypes(include=['object']).columns:
-            extracted_data[col] = extracted_data[col].where(pd.notna(extracted_data[col]), None)
-        
-        # Convert to records and create Pydantic models
-        trades_data = extracted_data.to_dict('records')
-        return {
-            "message": "File processed successfully",
-            "url": url,
-            "data": [TradeData(**trade) for trade in trades_data]
-        }
-        
-    except Exception as e:
-        logger.error(f"[DEBUG] Error processing file: {str(e)}")
-        logger.exception("[DEBUG] Full traceback:")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error processing file: {str(e)}"
-        )
 
 @app.get("/")
 async def root():
@@ -255,9 +79,8 @@ async def root():
         "message": "Trade Parser API",
         "version": "1.1.0",
         "endpoints": {
-            "/parse-trades/": "POST - Upload and parse trading data file",
-            "/upload/": "POST - Upload file to Google Cloud Storage",
-            "/test-gcs/": "GET - Test GCS connectivity",
-            "/": "GET - This information"
+            "/": "GET - This information",
+            "/basic-test/": "GET - Basic API test",
+            "/gcs-test/": "GET - Test GCS connectivity"
         }
     }
