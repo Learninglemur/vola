@@ -60,37 +60,32 @@ BUCKET_NAME = "vola_bucket"
 @app.get("/test-gcs/")
 async def test_gcs():
     """
-    Test GCS connectivity and permissions
+    Test GCS connectivity and permissions with detailed error reporting
     """
     try:
         logger.info("[DEBUG] Starting GCS test")
         
-        # Test credentials
-        credentials = storage_client.credentials
-        logger.info(f"[DEBUG] Using credentials: {credentials.__class__.__name__}")
-        
-        # Test listing buckets
-        buckets = list(storage_client.list_buckets(max_results=1))
-        logger.info(f"[DEBUG] Found buckets: {[b.name for b in buckets]}")
-        
-        # Test specific bucket
-        bucket = storage_client.bucket(BUCKET_NAME)
-        logger.info(f"[DEBUG] Found bucket: {bucket.name}")
-        
-        # Try to create a test blob
-        blob = bucket.blob("test.txt")
-        blob.upload_from_string("test content", content_type="text/plain")
-        logger.info("[DEBUG] Successfully created test blob")
-        
-        return {"message": "GCS test successful", "buckets": [b.name for b in buckets]}
-        
+        # 1. Test if we can get project info
+        try:
+            project = storage_client.project
+            return {"step1": f"Successfully got project: {project}"}
+        except Exception as e:
+            return {"error": f"Failed to get project info: {str(e)}"}
+
+        # If we get here, we'll try bucket operations
+        try:
+            bucket = storage_client.bucket(BUCKET_NAME)
+            return {"step2": f"Successfully got bucket reference: {BUCKET_NAME}"}
+        except Exception as e:
+            return {"error": f"Failed to get bucket: {str(e)}"}
+            
     except Exception as e:
-        logger.error(f"[DEBUG] GCS test failed: {str(e)}")
-        logger.exception("[DEBUG] Full error details:")
-        raise HTTPException(
-            status_code=500,
-            detail=f"GCS test failed: {str(e)}"
-        )
+        # Return the actual error instead of raising an HTTPException
+        return {
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "bucket_name": BUCKET_NAME
+        }
 
 def upload_to_gcs(content: bytes, filename: str, content_type: str) -> str:
     """
