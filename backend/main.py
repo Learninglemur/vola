@@ -1,23 +1,19 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from fastapi.responses import FileResponse
-from typing import List, Optional
+from typing import List, Dict, Optional
 import pandas as pd
 import io
 import re
-import logging
-import os
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Trade Parser API",
-    description="API for parsing trading data",
-    version="2.0.0",
+    description="API for parsing trading data from multiple file formats",
+    version="1.0.0"
 )
 
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -30,6 +26,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# [Previous code for constants and TradeData model remains the same]
 REQUIRED_COLUMNS_FORMAT_1 = ["Symbol", "Date/Time", "Quantity", "Proceeds", "Comm/Fee"]
 REQUIRED_COLUMNS_FORMAT_2 = ["Description", "DateTime", "Quantity", "Proceeds", "IBCommission"]
 
@@ -47,82 +44,102 @@ class TradeData(BaseModel):
     Proceeds: float
     Comm_fee: float
 
-def parse_symbol(symbol: str) -> pd.Series:
+# [Previous helper functions remain the same]
+def parse_symbol(symbol):
+    """Parse symbol string into components: Ticker, Expiry, Strike, Instrument"""
     parts = str(symbol).split()
+    ticker = parts[0] if len(parts) > 0 else None
+    expiry = parts[1] if len(parts) > 1 else None
+    strike = parts[2] if len(parts) > 2 else None
+    instrument = parts[3] if len(parts) > 3 else None
+    
     return pd.Series({
-        "Ticker": parts[0] if len(parts) > 0 else None,
-        "Expiry": parts[1] if len(parts) > 1 else None,
-        "Strike": parts[2] if len(parts) > 2 else None,
-        "Instrument": parts[3] if len(parts) > 3 else None,
+        'Ticker': ticker,
+        'Expiry': expiry,
+        'Strike': strike,
+        'Instrument': instrument
     })
 
-def parse_datetime(datetime_str: str, format_type: str) -> pd.Series:
-    try:
-        if pd.isna(datetime_str):
-            return pd.Series({"Date": None, "Time": None})
-        if format_type == "Format 1":
-            date, time = datetime_str.split(", ")
-            return pd.Series({"Date": date.strip().replace("-", ""), "Time": time.strip().replace(":", "")})
-        else:
-            date, time = datetime_str.split("; ")
-            return pd.Series({"Date": date.strip(), "Time": time.strip()})
-    except Exception:
-        return pd.Series({"Date": None, "Time": None})
+# [Other helper functions remain the same - parse_datetime, convert_to_numeric, detect_columns_in_row, find_header_row_and_format, extract_data]
 
-def convert_to_numeric(value: str) -> float:
-    try:
-        return round(float(re.sub(r"[^\d.-]", "", value)), 4)
-    except (ValueError, TypeError):
-        return 0.0
-
-def find_header_row_and_format(df: pd.DataFrame) -> (int, str):
-    for index, row in df.iterrows():
-        cleaned_row = [re.sub(r"[^\w]", "", str(cell)).lower() for cell in row]
-        if all(col.lower() in cleaned_row for col in REQUIRED_COLUMNS_FORMAT_1):
-            return index, "Format 1"
-        elif all(col.lower() in cleaned_row for col in REQUIRED_COLUMNS_FORMAT_2):
-            return index, "Format 2"
-    return None, None
-
-def extract_data(df: pd.DataFrame, header_row: int, format_type: str) -> pd.DataFrame:
-    if format_type == "Format 1":
-        df.columns = df.iloc[header_row]
-        df = df.iloc[header_row + 1:]
-        columns_map = {"Date/Time": "DateTime", "Comm/Fee": "Comm_fee", "Symbol": "Symbol", "Quantity": "Quantity", "Proceeds": "Proceeds"}
+async def process_single_file(file: UploadFile) -> pd.DataFrame:
+    """
+    Process a single file and return extracted data as DataFrame
+    """
+    if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type for {file.filename}. Please upload .xlsx, .xls, or .csv files"
+        )
+    
+    content = await file.read()
+    if file.filename.endswith(('.xlsx', '.xls')):
+        df = pd.read_excel(io.BytesIO(content))
     else:
-        df.columns = df.iloc[header_row]
-        df = df.iloc[header_row + 1:]
-        columns_map = {"Description": "Symbol", "DateTime": "DateTime", "Quantity": "Quantity", "Proceeds": "Proceeds", "IBCommission": "Comm_fee"}
-
-    df = df.rename(columns=columns_map)
-    df = df[columns_map.values()]
-    df["Symbol"] = df["Symbol"].apply(parse_symbol)
-    df[["Date", "Time"]] = df["DateTime"].apply(lambda x: parse_datetime(x, format_type))
-    df["Net_proceeds"] = df["Proceeds"].apply(convert_to_numeric) + df["Comm_fee"].apply(convert_to_numeric)
-    return df.reset_index(drop=True)
+        df = pd.read_csv(io.BytesIO(content))
+    
+    header_row, format_type = find_header_row_and_format(df)
+    if format_type is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File format not recognized for {file.filename}"
+        )
+    
+    extracted_data = extract_data(df, header_row, format_type)
+    if extracted_data.empty:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No valid data could be extracted from {file.filename}"
+        )
+    
+    return extracted_data
 
 @app.post("/parse-trades/", response_model=List[TradeData])
-async def parse_trades(file: UploadFile = File(...)):
-    if not file.filename.endswith((".xlsx", ".xls", ".csv")):
-        raise HTTPException(status_code=400, detail="Unsupported file type. Please upload .xlsx, .xls, or .csv files.")
-    
+async def parse_trades(files: List[UploadFile] = File(...)):
+    """
+    Parse trading data from multiple uploaded files
+    """
     try:
-        content = await file.read()
-        if file.filename.endswith((".xlsx", ".xls")):
-            df = pd.read_excel(io.BytesIO(content))
-        else:
-            df = pd.read_csv(io.BytesIO(content))
+        # Process all files and collect their DataFrames
+        all_data = []
+        for file in files:
+            extracted_df = await process_single_file(file)
+            all_data.append(extracted_df)
         
-        header_row, format_type = find_header_row_and_format(df)
-        if header_row is None or format_type is None:
-            raise HTTPException(status_code=400, detail="File format not recognized.")
+        # Combine all DataFrames
+        if not all_data:
+            raise HTTPException(
+                status_code=400,
+                detail="No valid data found in any of the uploaded files"
+            )
         
-        parsed_data = extract_data(df, header_row, format_type)
-        return {"message": "File processed successfully", "data": parsed_data.to_dict(orient="records")}
+        combined_df = pd.concat(all_data, ignore_index=True)
+        
+        # Sort the combined data by Date and Time
+        combined_df = combined_df.sort_values(['Date', 'Time'])
+        
+        # Replace NaN values with None for string columns and 0 for numeric columns
+        for col in combined_df.select_dtypes(include=['object']).columns:
+            combined_df[col] = combined_df[col].where(pd.notna(combined_df[col]), None)
+        
+        # Convert to records and create Pydantic models
+        trades_data = combined_df.to_dict('records')
+        return [TradeData(**trade) for trade in trades_data]
+        
     except Exception as e:
-        logger.error("Error processing file: %s", str(e))
-        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing files: {str(e)}"
+        )
 
 @app.get("/")
 async def root():
-    return {"message": "Trade Parser API is running", "version": "2.0.0"}
+    """Root endpoint returning API information"""
+    return {
+        "message": "Trade Parser API",
+        "version": "1.0.0",
+        "endpoints": {
+            "/parse-trades/": "POST - Upload and parse multiple trading data files",
+            "/": "GET - This information"
+        }
+    }
