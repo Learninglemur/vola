@@ -57,6 +57,58 @@ def upload_to_gcs(bucket_name: str, filename: str, content: bytes):
     blob.make_public()
     return blob.public_url
 
+# Define the required columns for each format
+REQUIRED_COLUMNS_FORMAT_1 = ["Symbol", "Date/Time", "Quantity", "Proceeds", "Comm/Fee"]
+REQUIRED_COLUMNS_FORMAT_2 = ["Description", "DateTime", "Quantity", "Proceeds", "IBCommission"]
+
+def find_header_row_and_format(df):
+    """
+    Scan rows progressively to find the header row and format type.
+    """
+    for index, row in df.iterrows():
+        if all(col in row.values for col in REQUIRED_COLUMNS_FORMAT_1):
+            return index, "Format 1"
+        elif all(col in row.values for col in REQUIRED_COLUMNS_FORMAT_2):
+            return index, "Format 2"
+    return None, None
+
+def extract_data(df, header_row, format_type):
+    """
+    Extract relevant columns starting from the identified header row.
+    """
+    if format_type == "Format 1":
+        df.columns = df.iloc[header_row]
+        df = df.iloc[header_row + 1:].reset_index(drop=True)
+        columns_map = {
+            "Date/Time": "DateTime",
+            "Comm/Fee": "Comm_fee",
+            "Symbol": "Symbol",
+            "Quantity": "Quantity",
+            "Proceeds": "Proceeds"
+        }
+    elif format_type == "Format 2":
+        df.columns = df.iloc[header_row]
+        df = df.iloc[header_row + 1:].reset_index(drop=True)
+        columns_map = {
+            "Description": "Symbol",
+            "DateTime": "DateTime",
+            "Quantity": "Quantity",
+            "Proceeds": "Proceeds",
+            "IBCommission": "Comm_fee"
+        }
+    else:
+        raise ValueError("Unsupported format type")
+
+    # Rename columns to standard names
+    df = df.rename(columns=columns_map)
+    
+    # Perform data cleaning
+    df["Proceeds"] = pd.to_numeric(df["Proceeds"], errors="coerce").fillna(0)
+    df["Comm_fee"] = pd.to_numeric(df["Comm_fee"], errors="coerce").fillna(0)
+    df["Net_proceeds"] = df["Proceeds"] + df["Comm_fee"]
+    
+    return df
+
 @app.post("/parse-trades/", response_model=List[TradeData])
 async def parse_trades(file: UploadFile = File(...)):
     """
@@ -96,10 +148,6 @@ async def parse_trades(file: UploadFile = File(...)):
         
         print(f"Detected format: {format_type}")
         
-        # Replace NaN values with None for string columns and 0 for numeric columns
-        for col in extracted_data.select_dtypes(include=['object']).columns:
-            extracted_data[col] = extracted_data[col].where(pd.notna(extracted_data[col]), None)
-
         # Convert extracted data to CSV
         csv_filename = f"parsed_{file.filename}.csv"
         csv_content = extracted_data.to_csv(index=False)
