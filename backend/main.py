@@ -1,13 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from fastapi.responses import FileResponse
 from typing import List, Optional
 import pandas as pd
 import io
 import re
 import logging
-import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -71,11 +69,20 @@ def parse_datetime(datetime_str: str, format_type: str) -> pd.Series:
 
 def convert_to_numeric(value: str) -> float:
     try:
-        return round(float(re.sub(r"[^\d.-]", "", value)), 4)
+        if pd.isna(value):
+            return 0.0
+        if isinstance(value, str):
+            clean_value = re.sub(r'[^\d.-]', '', value)
+            return round(float(clean_value), 4)
+        return round(float(value), 4)
     except (ValueError, TypeError):
         return 0.0
 
 def find_header_row_and_format(df: pd.DataFrame) -> (int, str):
+    initial_headers = df.columns.tolist()
+    if all(col in initial_headers for col in REQUIRED_COLUMNS_FORMAT_2):
+        return -1, "Format 2"
+        
     for index, row in df.iterrows():
         cleaned_row = [re.sub(r"[^\w]", "", str(cell)).lower() for cell in row]
         if all(col.lower() in cleaned_row for col in REQUIRED_COLUMNS_FORMAT_1):
@@ -89,16 +96,31 @@ def extract_data(df: pd.DataFrame, header_row: int, format_type: str) -> pd.Data
         df.columns = df.iloc[header_row]
         df = df.iloc[header_row + 1:]
         columns_map = {"Date/Time": "DateTime", "Comm/Fee": "Comm_fee", "Symbol": "Symbol", "Quantity": "Quantity", "Proceeds": "Proceeds"}
+        
+        try:
+            first_empty_index = df[df['Symbol'].isna() | (df['Symbol'] == '')].index[0]
+            df = df.iloc[:first_empty_index]
+        except IndexError:
+            pass
     else:
-        df.columns = df.iloc[header_row]
-        df = df.iloc[header_row + 1:]
+        df.columns = df.iloc[header_row] if header_row >= 0 else df.columns
+        df = df.iloc[header_row + 1:] if header_row >= 0 else df
         columns_map = {"Description": "Symbol", "DateTime": "DateTime", "Quantity": "Quantity", "Proceeds": "Proceeds", "IBCommission": "Comm_fee"}
 
     df = df.rename(columns=columns_map)
     df = df[columns_map.values()]
     df["Symbol"] = df["Symbol"].apply(parse_symbol)
     df[["Date", "Time"]] = df["DateTime"].apply(lambda x: parse_datetime(x, format_type))
-    df["Net_proceeds"] = df["Proceeds"].apply(convert_to_numeric) + df["Comm_fee"].apply(convert_to_numeric)
+    
+    df["Proceeds"] = df["Proceeds"].apply(convert_to_numeric)
+    df["Comm_fee"] = df["Comm_fee"].apply(convert_to_numeric)
+    df["Net_proceeds"] = df["Proceeds"] + df["Comm_fee"]
+    
+    df = df.sort_values(['Date', 'Time'])
+    
+    for col in df.select_dtypes(include=['object']).columns:
+        df[col] = df[col].where(pd.notna(df[col]), None)
+        
     return df.reset_index(drop=True)
 
 @app.post("/parse-trades/", response_model=List[TradeData])
@@ -118,6 +140,9 @@ async def parse_trades(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="File format not recognized.")
         
         parsed_data = extract_data(df, header_row, format_type)
+        if parsed_data.empty:
+            raise HTTPException(status_code=400, detail="No valid data could be extracted from the file")
+            
         return {"message": "File processed successfully", "data": parsed_data.to_dict(orient="records")}
     except Exception as e:
         logger.error("Error processing file: %s", str(e))
@@ -125,4 +150,11 @@ async def parse_trades(file: UploadFile = File(...)):
 
 @app.get("/")
 async def root():
-    return {"message": "Trade Parser API is running", "version": "2.0.0"}
+    return {
+        "message": "Trade Parser API is running",
+        "version": "2.0.0",
+        "endpoints": {
+            "/parse-trades/": "POST - Upload and parse trading data file",
+            "/": "GET - This information"
+        }
+    }
