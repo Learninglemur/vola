@@ -57,6 +57,41 @@ class TradeData(BaseModel):
 storage_client = storage.Client()
 BUCKET_NAME = "vola_bucket"
 
+@app.get("/test-gcs/")
+async def test_gcs():
+    """
+    Test GCS connectivity and permissions
+    """
+    try:
+        logger.info("[DEBUG] Starting GCS test")
+        
+        # Test credentials
+        credentials = storage_client.credentials
+        logger.info(f"[DEBUG] Using credentials: {credentials.__class__.__name__}")
+        
+        # Test listing buckets
+        buckets = list(storage_client.list_buckets(max_results=1))
+        logger.info(f"[DEBUG] Found buckets: {[b.name for b in buckets]}")
+        
+        # Test specific bucket
+        bucket = storage_client.bucket(BUCKET_NAME)
+        logger.info(f"[DEBUG] Found bucket: {bucket.name}")
+        
+        # Try to create a test blob
+        blob = bucket.blob("test.txt")
+        blob.upload_from_string("test content", content_type="text/plain")
+        logger.info("[DEBUG] Successfully created test blob")
+        
+        return {"message": "GCS test successful", "buckets": [b.name for b in buckets]}
+        
+    except Exception as e:
+        logger.error(f"[DEBUG] GCS test failed: {str(e)}")
+        logger.exception("[DEBUG] Full error details:")
+        raise HTTPException(
+            status_code=500,
+            detail=f"GCS test failed: {str(e)}"
+        )
+
 def upload_to_gcs(content: bytes, filename: str, content_type: str) -> str:
     """
     Uploads a file to Google Cloud Storage with detailed error logging.
@@ -147,7 +182,7 @@ async def upload_file_to_gcs(file: UploadFile = File(...)):
             detail=f"Error uploading file: {str(e)}"
         )
 
-@app.post("/parse-trades/", response_model=List[TradeData])
+@app.post("/parse-trades/")
 async def parse_trades(file: UploadFile = File(...)):
     """
     Parse trading data from uploaded file and upload it to Google Cloud Storage.
@@ -171,7 +206,7 @@ async def parse_trades(file: UploadFile = File(...)):
             logger.info(f"[DEBUG] GCS upload successful, URL: {url}")
         except Exception as upload_error:
             logger.error(f"[DEBUG] GCS upload failed: {str(upload_error)}")
-            # Continue with parsing even if upload fails
+            url = None
         
         # Parse the file
         file_content = io.BytesIO(content)
@@ -198,7 +233,7 @@ async def parse_trades(file: UploadFile = File(...)):
         
         logger.info(f"[DEBUG] Detected format: {format_type}")
         
-        # Replace NaN values with None for string columns and 0 for numeric columns
+        # Replace NaN values with None for string columns
         for col in extracted_data.select_dtypes(include=['object']).columns:
             extracted_data[col] = extracted_data[col].where(pd.notna(extracted_data[col]), None)
         
@@ -206,7 +241,7 @@ async def parse_trades(file: UploadFile = File(...)):
         trades_data = extracted_data.to_dict('records')
         return {
             "message": "File processed successfully",
-            "url": url if 'url' in locals() else None,
+            "url": url,
             "data": [TradeData(**trade) for trade in trades_data]
         }
         
@@ -227,6 +262,7 @@ async def root():
         "endpoints": {
             "/parse-trades/": "POST - Upload and parse trading data file",
             "/upload/": "POST - Upload file to Google Cloud Storage",
+            "/test-gcs/": "GET - Test GCS connectivity",
             "/": "GET - This information"
         }
     }
