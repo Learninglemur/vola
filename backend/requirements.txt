@@ -18,4 +18,4 @@ starlette==0.25.0  # Updated to be compatible with FastAPI
 typing_extensions==4.12.2
 tzdata==2024.2
 uvicorn==0.20.0
-google-cloud-storage==2.14.0  # Added for GCS support
+
