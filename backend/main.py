@@ -6,6 +6,14 @@ from typing import List, Dict, Optional
 import pandas as pd
 import io
 import re
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+@app.post("/parse-trades/", response_model=List[TradeData])
+async def parse_trades(file: UploadFile = File(...)):
+    try:
 
 app = FastAPI(
     title="Trade Parser API",
@@ -16,11 +24,7 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Local development
-        "https://vola-629904468774.us-central1.run.app",  # Cloud Run URL
-        "*"  # Or this to allow all origins
-    ],
+    allow_origins=["*"],  # Temporarily allow all origins for testing
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -272,3 +276,9 @@ async def root():
             "/": "GET - This information"
         }
     }
+except Exception as e:
+        logger.error(f"Error processing file: {str(e)}", exc_info=True)  # Add detailed logging
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing file: {str(e)}"
+        )
