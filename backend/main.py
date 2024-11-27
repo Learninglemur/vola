@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from google.cloud import storage  # Import Google Cloud Storage
+from google.cloud import storage
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import pandas as pd
@@ -53,15 +53,24 @@ storage_client = storage.Client()
 # Replace with your bucket name
 BUCKET_NAME = "vola_bucket"
 
-def upload_to_gcs(file: UploadFile, bucket_name: str) -> str:
+def upload_to_gcs(content: bytes, filename: str, content_type: str) -> str:
     """
     Uploads a file to Google Cloud Storage and returns the file's public URL.
     """
-    bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(file.filename)
-    blob.upload_from_file(file.file)
-    blob.make_public()
-    return blob.public_url
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(filename)
+        blob.upload_from_string(
+            content,
+            content_type=content_type
+        )
+        blob.make_public()
+        return blob.public_url
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to upload to GCS: {str(e)}"
+        )
 
 @app.post("/upload/")
 async def upload_file_to_gcs(file: UploadFile = File(...)):
@@ -75,8 +84,12 @@ async def upload_file_to_gcs(file: UploadFile = File(...)):
         )
     
     try:
-        public_url = upload_to_gcs(file, BUCKET_NAME)
+        content = await file.read()
+        content_type = file.content_type or 'application/octet-stream'
+        public_url = upload_to_gcs(content, file.filename, content_type)
         return {"message": "File uploaded successfully", "url": public_url}
+    except HTTPException as e:
+        raise e
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -104,9 +117,9 @@ async def parse_trades(file: UploadFile = File(...)):
         
         print("Initial columns in DataFrame:", df.columns.tolist())
 
-        # Save file to Google Cloud Storage
-        file.file = io.BytesIO(content)  # Reset file pointer
-        public_url = upload_to_gcs(file, BUCKET_NAME)
+        # Upload to Google Cloud Storage
+        content_type = file.content_type or 'application/octet-stream'
+        public_url = upload_to_gcs(content, file.filename, content_type)
 
         header_row, format_type = find_header_row_and_format(df)
         if format_type is None:
