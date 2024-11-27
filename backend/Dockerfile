@@ -9,5 +9,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
-# Change the CMD to use gunicorn with your config
-CMD ["gunicorn", "--config", "gunicorn_config.py", "main:app"]
+# Change back to using uvicorn directly
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
