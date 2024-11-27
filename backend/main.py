@@ -59,37 +59,65 @@ BUCKET_NAME = "vola_bucket"
 
 def upload_to_gcs(content: bytes, filename: str, content_type: str) -> str:
     """
-    Uploads a file to Google Cloud Storage and returns a signed URL for temporary access.
+    Uploads a file to Google Cloud Storage with detailed error logging.
     """
     try:
-        logger.info(f"Starting upload process for file: {filename}")
+        logger.info(f"[DEBUG] Starting upload process for file: {filename}")
+        logger.info(f"[DEBUG] Content length: {len(content)} bytes")
+        logger.info(f"[DEBUG] Content type: {content_type}")
         
-        bucket = storage_client.bucket(BUCKET_NAME)
-        logger.info("Successfully connected to bucket")
+        # Print current credentials
+        credentials = storage_client.credentials
+        logger.info(f"[DEBUG] Using credentials: {credentials.__class__.__name__}")
+        logger.info(f"[DEBUG] Project ID: {storage_client.project}")
         
-        blob = bucket.blob(filename)
-        logger.info("Created blob reference")
+        # Try to list buckets to verify credentials
+        try:
+            buckets = list(storage_client.list_buckets(max_results=1))
+            logger.info(f"[DEBUG] Successfully listed buckets: {[b.name for b in buckets]}")
+        except Exception as e:
+            logger.error(f"[DEBUG] Failed to list buckets: {str(e)}")
         
-        logger.info("Starting file upload...")
-        blob.upload_from_string(
-            content,
-            content_type=content_type
-        )
-        logger.info("File upload completed")
+        # Get bucket
+        try:
+            bucket = storage_client.bucket(BUCKET_NAME)
+            logger.info(f"[DEBUG] Got bucket reference: {bucket.name}")
+        except Exception as e:
+            logger.error(f"[DEBUG] Failed to get bucket: {str(e)}")
+            raise
         
-        # Generate a signed URL that expires in 1 hour
-        signed_url = blob.generate_signed_url(
-            version="v4",
-            expiration=datetime.timedelta(hours=1),
-            method="GET"
-        )
+        # Create blob
+        try:
+            blob = bucket.blob(filename)
+            logger.info(f"[DEBUG] Created blob reference: {blob.name}")
+        except Exception as e:
+            logger.error(f"[DEBUG] Failed to create blob: {str(e)}")
+            raise
         
-        logger.info(f"File uploaded successfully. Signed URL generated.")
-        return signed_url
+        # Upload content
+        try:
+            blob.upload_from_string(content, content_type=content_type)
+            logger.info("[DEBUG] Successfully uploaded content")
+        except Exception as e:
+            logger.error(f"[DEBUG] Failed to upload content: {str(e)}")
+            raise
+        
+        # Generate signed URL
+        try:
+            signed_url = blob.generate_signed_url(
+                version="v4",
+                expiration=datetime.timedelta(hours=1),
+                method="GET"
+            )
+            logger.info("[DEBUG] Generated signed URL")
+            return signed_url
+        except Exception as e:
+            logger.error(f"[DEBUG] Failed to generate signed URL: {str(e)}")
+            raise
         
     except Exception as e:
-        logger.error(f"Error in upload_to_gcs: {str(e)}")
-        logger.exception("Full traceback:")
+        logger.error(f"[DEBUG] Top level error in upload_to_gcs: {str(e)}")
+        logger.exception("[DEBUG] Full traceback:")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to upload to GCS: {str(e)}"
@@ -109,11 +137,11 @@ async def upload_file_to_gcs(file: UploadFile = File(...)):
     try:
         content = await file.read()
         content_type = file.content_type or 'application/octet-stream'
-        logger.info(f"Uploading file: {file.filename}, Content-Type: {content_type}")
+        logger.info(f"[DEBUG] Attempting to upload: {file.filename}, Content-Type: {content_type}")
         url = upload_to_gcs(content, file.filename, content_type)
         return {"message": "File uploaded successfully", "url": url}
     except Exception as e:
-        logger.error(f"Upload failed: {str(e)}")
+        logger.error(f"[DEBUG] Upload failed: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Error uploading file: {str(e)}"
@@ -133,19 +161,26 @@ async def parse_trades(file: UploadFile = File(...)):
     try:
         # Read file content
         content = await file.read()
-        logger.info(f"File read: {file.filename}")
+        logger.info(f"[DEBUG] File read successfully: {file.filename}")
         
+        # Try GCS upload first
+        try:
+            content_type = file.content_type or 'application/octet-stream'
+            logger.info(f"[DEBUG] Attempting GCS upload with content-type: {content_type}")
+            url = upload_to_gcs(content, file.filename, content_type)
+            logger.info(f"[DEBUG] GCS upload successful, URL: {url}")
+        except Exception as upload_error:
+            logger.error(f"[DEBUG] GCS upload failed: {str(upload_error)}")
+            # Continue with parsing even if upload fails
+        
+        # Parse the file
+        file_content = io.BytesIO(content)
         if file.filename.endswith(('.xlsx', '.xls')):
-            df = pd.read_excel(io.BytesIO(content))
+            df = pd.read_excel(file_content)
         else:
-            df = pd.read_csv(io.BytesIO(content))
+            df = pd.read_csv(file_content)
         
-        logger.info("Initial columns in DataFrame:", df.columns.tolist())
-
-        # Upload to Google Cloud Storage
-        content_type = file.content_type or 'application/octet-stream'
-        url = upload_to_gcs(content, file.filename, content_type)
-        logger.info(f"File uploaded to GCS: {url}")
+        logger.info(f"[DEBUG] Initial columns in DataFrame: {df.columns.tolist()}")
 
         header_row, format_type = find_header_row_and_format(df)
         if format_type is None:
@@ -161,7 +196,7 @@ async def parse_trades(file: UploadFile = File(...)):
                 detail="No valid data could be extracted from the file"
             )
         
-        logger.info(f"Detected format: {format_type}")
+        logger.info(f"[DEBUG] Detected format: {format_type}")
         
         # Replace NaN values with None for string columns and 0 for numeric columns
         for col in extracted_data.select_dtypes(include=['object']).columns:
@@ -171,13 +206,13 @@ async def parse_trades(file: UploadFile = File(...)):
         trades_data = extracted_data.to_dict('records')
         return {
             "message": "File processed successfully",
-            "url": url,
+            "url": url if 'url' in locals() else None,
             "data": [TradeData(**trade) for trade in trades_data]
         }
         
     except Exception as e:
-        logger.error(f"Error processing file: {str(e)}")
-        logger.exception("Full traceback:")
+        logger.error(f"[DEBUG] Error processing file: {str(e)}")
+        logger.exception("[DEBUG] Full traceback:")
         raise HTTPException(
             status_code=500,
             detail=f"Error processing file: {str(e)}"
