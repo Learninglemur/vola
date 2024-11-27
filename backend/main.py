@@ -5,9 +5,15 @@ from google.cloud import storage
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import pandas as pd
+import datetime
+import logging
 import io
 import re
 import os
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -49,24 +55,41 @@ class TradeData(BaseModel):
 
 # Google Cloud Storage client
 storage_client = storage.Client()
-
-# Replace with your bucket name
 BUCKET_NAME = "vola_bucket"
 
 def upload_to_gcs(content: bytes, filename: str, content_type: str) -> str:
     """
-    Uploads a file to Google Cloud Storage and returns the file's public URL.
+    Uploads a file to Google Cloud Storage and returns a signed URL for temporary access.
     """
     try:
+        logger.info(f"Starting upload process for file: {filename}")
+        
         bucket = storage_client.bucket(BUCKET_NAME)
+        logger.info("Successfully connected to bucket")
+        
         blob = bucket.blob(filename)
+        logger.info("Created blob reference")
+        
+        logger.info("Starting file upload...")
         blob.upload_from_string(
             content,
             content_type=content_type
         )
-        blob.make_public()
-        return blob.public_url
+        logger.info("File upload completed")
+        
+        # Generate a signed URL that expires in 1 hour
+        signed_url = blob.generate_signed_url(
+            version="v4",
+            expiration=datetime.timedelta(hours=1),
+            method="GET"
+        )
+        
+        logger.info(f"File uploaded successfully. Signed URL generated.")
+        return signed_url
+        
     except Exception as e:
+        logger.error(f"Error in upload_to_gcs: {str(e)}")
+        logger.exception("Full traceback:")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to upload to GCS: {str(e)}"
@@ -86,11 +109,11 @@ async def upload_file_to_gcs(file: UploadFile = File(...)):
     try:
         content = await file.read()
         content_type = file.content_type or 'application/octet-stream'
-        public_url = upload_to_gcs(content, file.filename, content_type)
-        return {"message": "File uploaded successfully", "url": public_url}
-    except HTTPException as e:
-        raise e
+        logger.info(f"Uploading file: {file.filename}, Content-Type: {content_type}")
+        url = upload_to_gcs(content, file.filename, content_type)
+        return {"message": "File uploaded successfully", "url": url}
     except Exception as e:
+        logger.error(f"Upload failed: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Error uploading file: {str(e)}"
@@ -110,16 +133,19 @@ async def parse_trades(file: UploadFile = File(...)):
     try:
         # Read file content
         content = await file.read()
+        logger.info(f"File read: {file.filename}")
+        
         if file.filename.endswith(('.xlsx', '.xls')):
             df = pd.read_excel(io.BytesIO(content))
         else:
             df = pd.read_csv(io.BytesIO(content))
         
-        print("Initial columns in DataFrame:", df.columns.tolist())
+        logger.info("Initial columns in DataFrame:", df.columns.tolist())
 
         # Upload to Google Cloud Storage
         content_type = file.content_type or 'application/octet-stream'
-        public_url = upload_to_gcs(content, file.filename, content_type)
+        url = upload_to_gcs(content, file.filename, content_type)
+        logger.info(f"File uploaded to GCS: {url}")
 
         header_row, format_type = find_header_row_and_format(df)
         if format_type is None:
@@ -135,7 +161,7 @@ async def parse_trades(file: UploadFile = File(...)):
                 detail="No valid data could be extracted from the file"
             )
         
-        print(f"Detected format: {format_type}")
+        logger.info(f"Detected format: {format_type}")
         
         # Replace NaN values with None for string columns and 0 for numeric columns
         for col in extracted_data.select_dtypes(include=['object']).columns:
@@ -145,11 +171,13 @@ async def parse_trades(file: UploadFile = File(...)):
         trades_data = extracted_data.to_dict('records')
         return {
             "message": "File processed successfully",
-            "url": public_url,
+            "url": url,
             "data": [TradeData(**trade) for trade in trades_data]
         }
         
     except Exception as e:
+        logger.error(f"Error processing file: {str(e)}")
+        logger.exception("Full traceback:")
         raise HTTPException(
             status_code=500,
             detail=f"Error processing file: {str(e)}"
