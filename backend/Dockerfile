@@ -2,7 +2,7 @@
 FROM python:3.9-slim
 
 # Set the working directory
-WORKDIR /app
+WORKDIR /app/backend
 
 # Install system dependencies for pandas and GCS
 RUN apt-get update && apt-get install -y \
