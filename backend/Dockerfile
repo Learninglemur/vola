@@ -26,5 +26,4 @@ ENV PYTHONUNBUFFERED=1
 # Expose port 8080 for Cloud Run
 EXPOSE 8080
 
-# Command to run the application using uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+CMD ["gunicorn", "--config", "gunicorn_config.py", "main:app"]
