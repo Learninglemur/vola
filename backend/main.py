@@ -1,11 +1,13 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel  # Add this import
+from pydantic import BaseModel
 from typing import List, Dict, Optional
 import pandas as pd
 import io
 import re
+from google.cloud import storage
+from datetime import datetime
 
 app = FastAPI(
     title="Trade Parser API",
@@ -17,14 +19,18 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",  # Local development
-        "https://vola-629904468774.us-central1.run.app",  # Cloud Run URL
-        "*"  # Or this to allow all origins
+        "http://localhost:5173",
+        "https://vola-629904468774.us-central1.run.app",
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Initialize Google Cloud Storage client
+storage_client = storage.Client()
+bucket_name = "vola_bucket"
 
 # Define the required columns for each format
 REQUIRED_COLUMNS_FORMAT_1 = ["Symbol", "Date/Time", "Quantity", "Proceeds", "Comm/Fee"]
@@ -104,7 +110,7 @@ def detect_columns_in_row(row):
     Detect if a row matches the required columns for either format.
     """
     cleaned_row = [re.sub(r'[^a-zA-Z]', '', str(cell)).strip().lower() for cell in row]
-    print(f"Checking row: {cleaned_row}")  # Keeping debug output
+    print(f"Checking row: {cleaned_row}")
 
     if all(re.sub(r'[^a-zA-Z]', '', col).lower() in cleaned_row for col in REQUIRED_COLUMNS_FORMAT_1):
         return "Format 1"
@@ -174,7 +180,7 @@ def extract_data(df, header_row, format_type):
             if matched_col:
                 matched_columns[standard_col] = matched_col
 
-    print(f"Matched columns: {matched_columns}")  # Keeping debug output
+    print(f"Matched columns: {matched_columns}")
 
     if len(matched_columns) < len(columns_map):
         print("Error: Could not find all required columns in the header row.")
@@ -209,12 +215,37 @@ def extract_data(df, header_row, format_type):
     extracted_data = extracted_data.sort_values(['Date', 'Time'])
     extracted_data = extracted_data[final_columns]
     
-    return extracted_data.head(10)
+    return extracted_data
+
+def save_to_gcs(df, original_filename):
+    """
+    Save DataFrame to Google Cloud Storage bucket
+    """
+    # Select only the required columns
+    columns_to_save = ['Date', 'Time', 'Ticker', 'Expiry', 'Strike', 'Instrument', 
+                      'Quantity', 'Net_proceeds']
+    df_to_save = df[columns_to_save]
+    
+    # Create a timestamp for the filename
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    base_filename = original_filename.rsplit('.', 1)[0]
+    filename = f"{base_filename}_{timestamp}.csv"
+    
+    # Convert DataFrame to CSV
+    csv_buffer = io.StringIO()
+    df_to_save.to_csv(csv_buffer, index=False)
+    
+    # Upload to GCS
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(f"processed_trades/{filename}")
+    blob.upload_from_string(csv_buffer.getvalue(), content_type='text/csv')
+    
+    return f"gs://{bucket_name}/processed_trades/{filename}"
 
 @app.post("/parse-trades/", response_model=List[TradeData])
 async def parse_trades(file: UploadFile = File(...)):
     """
-    Parse trading data from uploaded file
+    Parse trading data from uploaded file and save to Google Cloud Storage
     """
     if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
         raise HTTPException(
@@ -245,14 +276,16 @@ async def parse_trades(file: UploadFile = File(...)):
                 detail="No valid data could be extracted from the file"
             )
         
-        print(f"Detected format: {format_type}")
+        # Save to Google Cloud Storage
+        gcs_path = save_to_gcs(extracted_data, file.filename)
+        print(f"File saved to: {gcs_path}")
         
         # Replace NaN values with None for string columns and 0 for numeric columns
         for col in extracted_data.select_dtypes(include=['object']).columns:
             extracted_data[col] = extracted_data[col].where(pd.notna(extracted_data[col]), None)
         
         # Convert to records and create Pydantic models
-        trades_data = extracted_data.to_dict('records')
+        trades_data = extracted_data.head(10).to_dict('records')
         return [TradeData(**trade) for trade in trades_data]
         
     except Exception as e:
