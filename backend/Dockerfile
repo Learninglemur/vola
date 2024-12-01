@@ -4,24 +4,26 @@ FROM python:3.9-slim
 # Set the working directory
 WORKDIR /app/backend
 
-# Install system dependencies for pandas
-# Also, clean up to keep the image size small
+# Install system dependencies for pandas and GCS
 RUN apt-get update && apt-get install -y \
-    gcc \
-    python3-dev \
-    && rm -rf /var/lib/apt/lists/*
+   gcc \
+   python3-dev \
+   && rm -rf /var/lib/apt/lists/*
 
 # Copy only requirements.txt first, for better caching
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies including google-cloud-storage
+RUN pip install --no-cache-dir -r requirements.txt \
+   && pip install --no-cache-dir google-cloud-storage
 
-# Copy the rest of the application code
+# Copy the rest of the application code 
 COPY . .
 
-# Set environment variable for Python unbuffered logs (for better logging)
+# Set environment variables
 ENV PYTHONUNBUFFERED=1
+ENV PORT=8080
+ENV WORKERS=1
 
 # Expose port 8080 for Cloud Run
 EXPOSE 8080
