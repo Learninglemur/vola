@@ -131,7 +131,7 @@ def find_header_row_and_format(df):
     return None, None
 
 def extract_data(df, header_row, format_type):
-    """	
+    """
     Extract relevant columns starting from the identified header row.
     """
     if format_type == "Format 1":
