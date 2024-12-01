@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel  # Add this import
 from typing import List, Dict, Optional
 import pandas as pd
 import io
@@ -261,63 +261,6 @@ async def parse_trades(file: UploadFile = File(...)):
             detail=f"Error processing file: {str(e)}"
         )
 
-@app.post("/generate-csv/")
-async def generate_csv(file: UploadFile = File(...)):
-    """
-    Generate CSV file with selected columns from the parsed trade data
-    """
-    if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
-        raise HTTPException(
-            status_code=400,
-            detail="Unsupported file type. Please upload .xlsx, .xls, or .csv file"
-        )
-
-    try:
-        content = await file.read()
-        if file.filename.endswith(('.xlsx', '.xls')):
-            df = pd.read_excel(io.BytesIO(content))
-        else:
-            df = pd.read_csv(io.BytesIO(content))
-        
-        header_row, format_type = find_header_row_and_format(df)
-        if format_type is None:
-            raise HTTPException(
-                status_code=400,
-                detail="File format not recognized"
-            )
-        
-        extracted_data = extract_data(df, header_row, format_type)
-        if extracted_data.empty:
-            raise HTTPException(
-                status_code=400,
-                detail="No valid data could be extracted from the file"
-            )
-
-        # Select only the required columns
-        selected_columns = ['Date', 'Time', 'Ticker', 'Expiry', 'Strike', 
-                          'Instrument', 'Quantity', 'Net_proceeds']
-        final_df = extracted_data[selected_columns]
-
-        # Create a string buffer to write the CSV to
-        output = io.StringIO()
-        final_df.to_csv(output, index=False)
-        output.seek(0)
-        
-        # Return the CSV file as a streaming response
-        return StreamingResponse(
-            iter([output.getvalue()]),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": f"attachment; filename=trade_data.csv"
-            }
-        )
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error generating CSV file: {str(e)}"
-        )
-
 @app.get("/")
 async def root():
     """Root endpoint returning API information"""
@@ -326,7 +269,6 @@ async def root():
         "version": "1.0.0",
         "endpoints": {
             "/parse-trades/": "POST - Upload and parse trading data file",
-            "/generate-csv/": "POST - Upload and generate CSV file",
             "/": "GET - This information"
         }
     }
